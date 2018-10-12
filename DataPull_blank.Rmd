@@ -1,0 +1,167 @@
+---
+title: " "
+output: 
+  html_document: 
+    df_print: kable
+    theme: journal
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+
+################## READ ME #################################
+
+  ## Step 1
+  ### Enter main directory paths to proper folder
+  ### Manually `Run Setup Chunk`
+
+  ## Step 2
+  ### Enter filename in `wrangle data` chunk
+  
+  ## Step 3
+  ### Enter rmarkdown document directory
+  ### copy and run render function in console:
+  
+  ## rmarkdown::render("ENTER FILE PATH DIRECTORY/DataPull_blank.Rmd", output_file = paste0("REPORTNAME",today(),".html"), output_format = "all", output_dir = paste0(studypath,"Reports/")) 
+
+#########################################################
+
+
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(openxlsx)
+library(knitr)
+
+  ##set path variables
+
+  xpath <<- "ENTER/LONG/XDRIVE/DIRECTORY/FOR/DATAPULL/LOCATION/"
+  studypath <<- "ENTER/LONG/XDRIVE/DIRECTORY/FOR/STUDY/FOLDER/"
+
+
+clean_datapull <- function(x){
+  ## col types 
+  names <- names(read_excel(paste0(xpath,x), n_max = 0))
+  ct <- ifelse(grepl("^VisitDateTime_", names), "date", "guess")
+  ## import data
+  raw <- read_excel(paste0(xpath,x), col_types = ct)
+  ## format SSN
+  raw$SSN <- ifelse(grepl("^0",raw$PatientSSN), paste0("'",raw$PatientSSN),raw$PatientSSN)
+  ## save raw data to study folder
+  raw  %>% write_excel_csv(paste0(studypath,"Data Pulls/pctime_",today(),"_RAW.csv"))
+  ## clean data pull
+  clean <-raw %>% select(-PatientName) %>% 
+    separate(PatientFirstName, into = c("First_Name", "Middle", "suffix")) %>%
+    replace_na(list(suffix = "")) %>%
+    unite(Last_Name, PatientLastName, suffix, sep = " ") %>%
+    mutate(ScreenID = "", subnum = "",Study = "PC-TIME", List_Date = today(),
+           SignOff_Date = "", Next_Contact = "", Recruitment_Status = "Pending PCP Sign-Off",
+           CheckBack_Date = "") %>% 
+    rename(PC_Team = `PC Team`, PCP = PrimaryCareProvider,PC_Type =ProviderType) %>%
+    select(-Middle, -PatientSID,-PatientSSN)
+  ## order columns
+  newclean <- cbind(clean[23:24], clean[1:2],clean[22],clean[25:30],clean[11:12],
+                    clean[20:21], clean[3:10], clean[13:19]) %>% as.tibble()
+  
+  ## create sheet 1 - Patient info
+  sheet1 <<- newclean %>% 
+    mutate(Eligibility = Eligible_AUDC_PTSD_BOTH, AUDC=as.numeric(RawScore_AUDC), ScreenDate_AU = date(VisitDateTime_AUDC),
+           PCPTSD = as.numeric(RawScore_PCPTSD), 
+           ScreenDate_PS = date(VisitDateTime_PCPTSD)) %>%
+    select(-c(16:23),-PrimaryStopCode_AUDC,-PrimaryStopCode_PCPTSD,-RawScore_AUDC,
+           -RawScore_PCPTSD, -VisitDateTime_AUDC, -VisitDateTime_PCPTSD, -Eligible_AUDC_PTSD_BOTH)
+  ## create sheet 2 - Address info
+  sheet2 <- clean %>% 
+    select(subnum, Home_Phone = "PhoneNumber1", Cell_Phone = "PhoneNumber2",StreetAddress1,
+           StreetAddress2, City, State, City, SSN) %>% 
+    replace_na(list(StreetAddress2 = "")) %>% 
+    unite(StreetAddress, StreetAddress1,StreetAddress2, sep = " ") %>% 
+    mutate(Call_Text = "", Notes = "", Staff = "")
+  ## create workbook
+  two_sheets <- list("Patient Info" = sheet1, "Address Info" = sheet2)
+  write.xlsx(two_sheets, paste0(studypath,"Data Clean/pctime_",today(),".xlsx")) 
+}
+
+
+```
+
+
+```{r wrangle data}
+
+#### Run function
+## Enter data pull filename
+## include a `.xlsx` extension. 
+
+clean_datapull("FILENAME.xlsx")
+
+```
+
+
+# Data Pull Descriptives 
+
+## Positive screens for either AUDC or PCPTSD 
+
+```{r}
+sheet1 %>% group_by(Site) %>% summarise(count = n())
+
+sheet1 %>% group_by(Site) %>% summarise(count = n()) %>%
+  ggplot(aes(Site, count)) + geom_col(fill="grey50") + labs(x = "") +
+  theme_minimal() + theme(axis.text = element_text(color = "black")) 
+```
+
+
+### AUD Screens 
+
+```{r}
+
+sheet1 %>% ggplot(aes(Site, AUDC)) + geom_boxplot() + theme_minimal() + 
+  theme(axis.text = element_text(color = "black")) + labs(x = "") 
+  
+
+```
+
+
+## Counts by PC Team
+
+```{r teams}
+
+clinic_count <-  function(x){sheet1 %>% filter(Site== x) %>% group_by(Site, PC_Team) %>%
+    summarise(count = n()) %>% arrange(desc(count))}
+
+```
+
+### Site Name
+```{r}
+
+clinic_count("NAME")
+
+```
+
+
+## Counts when positive for both screens 
+
+```{r Screen both}
+
+sheet1 %>% filter(Eligibility == "BOTH")  %>% 
+   group_by(Site) %>% summarise(count = n(),AUD_median = median(AUDC),
+                                AUDC_max = max(AUDC),PTSD_median = median(PCPTSD),
+                                PCPTSD_max = max(PCPTSD))
+```
+
+
+```{r both plot}
+
+sheet1 %>% group_by(Month= month(ScreenDate_AU, label = TRUE), Site) %>% 
+  filter(Eligibility == "BOTH") %>% summarise(count = n()) %>% 
+  ggplot(aes(x = as.factor(Month),count, color = Site, group = Site)) + 
+  geom_line() + geom_point() + labs(x = "2018", y = "Number of patients") +
+  theme_minimal() + theme(axis.text = element_text(color = "black")) + 
+  scale_color_viridis_d() + scale_y_continuous(breaks = c(2,4,6,8, 10))
+
+```
+
+
+
+
+
