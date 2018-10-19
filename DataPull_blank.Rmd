@@ -1,11 +1,10 @@
 ---
-title: " "
+title: "Sampling Frame Descriptives"
 output: 
   html_document: 
     df_print: kable
     theme: journal
 ---
-
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
@@ -17,13 +16,15 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
   ### Manually `Run Setup Chunk`
 
   ## Step 2
-  ### Enter filename in `wrangle data` chunk
+  ### Enter filenames in `wrangle data` chunk
   
-  ## Step 3
-  ### Enter rmarkdown document directory
+  ## Step 3 
+  ### Run `clean data` chunk
+
+  ## Step 4
   ### copy and run render function in console:
   
-  ## rmarkdown::render("ENTER FILE PATH DIRECTORY/DataPull_blank.Rmd", output_file = paste0("REPORTNAME",today(),".html"), output_format = "all", output_dir = paste0(studypath,"Reports/")) 
+  ## rmarkdown::render("DOC/DIRECTORY/DataPull_*.Rmd", output_file = paste0("REPORTNAME_",today(),".html"), output_format = "all", output_dir = paste0(studypath,"Reports/")) 
 
 #########################################################
 
@@ -33,14 +34,17 @@ library(readxl)
 library(lubridate)
 library(openxlsx)
 library(knitr)
+library(sf)
+library(knitr)
 
-  ##set path variables
+### set path variables
 
   xpath <<- "ENTER/LONG/XDRIVE/DIRECTORY/FOR/DATAPULL/LOCATION/"
   studypath <<- "ENTER/LONG/XDRIVE/DIRECTORY/FOR/STUDY/FOLDER/"
 
-
-clean_datapull <- function(x){
+#### wrangle raw data ####
+wrangler <- function(x,arg1,arg2){  
+  
   ## col types 
   names <- names(read_excel(paste0(xpath,x), n_max = 0))
   ct <- ifelse(grepl("^VisitDateTime_", names), "date", "guess")
@@ -48,59 +52,114 @@ clean_datapull <- function(x){
   raw <- read_excel(paste0(xpath,x), col_types = ct)
   ## format SSN
   raw$SSN <- ifelse(grepl("^0",raw$PatientSSN), paste0("'",raw$PatientSSN),raw$PatientSSN)
+
+  ## import all screens
+  AU <- read_excel(paste0(xpath,arg1)) %>% 
+    mutate(ScreenDate_AU = date(VisitDateTime), AUDC=as.numeric(RawScore)) %>%
+    select(PatientSID, ScreenDate_AU, AUDC) %>%
+    group_by(PatientSID) %>% slice(which.max(ScreenDate_AU))
+
+  PS <- read_excel(paste0(xpath,arg2)) %>% 
+    mutate(ScreenDate_PS = date(VisitDateTime), PCPTSD =as.numeric(RawScore)) %>%
+    select(PatientSID, ScreenDate_PS, PCPTSD) %>%
+    group_by(PatientSID) %>% slice(which.max(ScreenDate_PS))
+
+  all_screens <- merge(AU, PS, by.x = "PatientSID", by.y = "PatientSID", all = TRUE)
+
+  ## merge to master file
+  merged <<- merge(raw,all_screens, by.x = "PatientSID", by.y = "PatientSID", all.x = TRUE)
   ## save raw data to study folder
-  raw  %>% write_excel_csv(paste0(studypath,"Data Pulls/pctime_",today(),"_RAW.csv"))
-  ## clean data pull
-  clean <-raw %>% select(-PatientName) %>% 
+  merged  %>% write.xlsx(paste0(studypath,"FOLDER/filename_",today(),"_RAW.xlsx"))
+}
+
+  
+#### clean data pull ####
+clean_datapull <- function(x){  
+ 
+  clean <-x %>% select(-PatientName) %>% 
     separate(PatientFirstName, into = c("First_Name", "Middle", "suffix")) %>%
     replace_na(list(suffix = "")) %>%
     unite(Last_Name, PatientLastName, suffix, sep = " ") %>%
     mutate(ScreenID = "", subnum = "",Study = "PC-TIME", List_Date = today(),
-           SignOff_Date = "", Next_Contact = "", Recruitment_Status = "Pending PCP Sign-Off",
-           CheckBack_Date = "") %>% 
+         SignOff_Date = "", Next_Contact = "", Recruitment_Status = "Pending PCP Sign-Off",
+         CheckBack_Date = "") %>% 
     rename(PC_Team = `PC Team`, PCP = PrimaryCareProvider,PC_Type =ProviderType) %>%
-    select(-Middle, -PatientSID,-PatientSSN)
+    select(-Middle, -PatientSID,-PatientSSN,-c(18:23))
+
   ## order columns
-  newclean <- cbind(clean[23:24], clean[1:2],clean[22],clean[25:30],clean[11:12],
-                    clean[20:21], clean[3:10], clean[13:19]) %>% as.tibble()
-  
+  newclean <- cbind(clean[27:28], clean[1:2],clean[22],clean[29:34],clean[11:15],
+                   clean[17:18],clean[16],clean[23:26], clean[3:10],clean[19:21]) %>% 
+              as.tibble()
+
   ## create sheet 1 - Patient info
   sheet1 <<- newclean %>% 
-    mutate(Eligibility = Eligible_AUDC_PTSD_BOTH, AUDC=as.numeric(RawScore_AUDC), ScreenDate_AU = date(VisitDateTime_AUDC),
-           PCPTSD = as.numeric(RawScore_PCPTSD), 
-           ScreenDate_PS = date(VisitDateTime_PCPTSD)) %>%
-    select(-c(16:23),-PrimaryStopCode_AUDC,-PrimaryStopCode_PCPTSD,-RawScore_AUDC,
-           -RawScore_PCPTSD, -VisitDateTime_AUDC, -VisitDateTime_PCPTSD, -Eligible_AUDC_PTSD_BOTH)
+    rename(Eligibility = Eligible_AUDC_PTSD_BOTH) %>%
+    select(-c(24:34))
+
+  ## calculate distance to VA
+  VA <- read_excel(paste0(studypath,"VA_geo.xlsx")) %>%
+    st_as_sf(coords = c("long","lat"), crs = 4269)
+
+  newclean$lat <- ifelse(newclean$GISPatientAddressLatitude == 0, NA, newclean$GISPatientAddressLatitude)
+  newclean$long <- ifelse(newclean$GISPatientAddressLongitude == 0, NA, newclean$GISPatientAddressLongitude)
+
+  geoloc <- newclean %>% 
+    select(Site, SSN,long,lat) %>%  na.omit() %>% 
+    st_as_sf(coords = c("long","lat"), crs = 4269)
+
+  VA_dist <- map(c("SiteName1",...), function(x){
+    city <-geoloc %>% filter(Site == x)
+    site <- filter(VA, Site == x)
+    dist <- st_distance(city,site)
+    out <- mutate(city, dist = dist)
+    return(out)
+  }) %>%
+    reduce(rbind) %>%
+    select(-Site)
+
   ## create sheet 2 - Address info
-  sheet2 <- clean %>% 
-    select(subnum, Home_Phone = "PhoneNumber1", Cell_Phone = "PhoneNumber2",StreetAddress1,
-           StreetAddress2, City, State, City, SSN) %>% 
+  sheet <- newclean %>% 
+    select(subnum, SSN, Home_Phone = "PhoneNumber1", Cell_Phone = "PhoneNumber2",StreetAddress1,
+           StreetAddress2, City, State, Zip,lat,long,Site) %>% 
     replace_na(list(StreetAddress2 = "")) %>% 
     unite(StreetAddress, StreetAddress1,StreetAddress2, sep = " ") %>% 
     mutate(Call_Text = "", Notes = "", Staff = "")
+
+  sheet2 <<- left_join(sheet,VA_dist, by = "SSN") %>% 
+    mutate(dist_miles = as.numeric(dist/1609.34), dist_meters = as.numeric(dist)) %>% 
+    select(1:14, 17:18)
+
   ## create workbook
   two_sheets <- list("Patient Info" = sheet1, "Address Info" = sheet2)
-  write.xlsx(two_sheets, paste0(studypath,"Data Clean/pctime_",today(),".xlsx")) 
+  write.xlsx(two_sheets, paste0(studypath,"FOLDER/filename_",today(),".xlsx"))
 }
-
 
 ```
 
 
 ```{r wrangle data}
 
-#### Run function
-## Enter data pull filename
-## include a `.xlsx` extension. 
+## Enter raw data filenames 
+## include a `.xlsx` extension  
 
-clean_datapull("FILENAME.xlsx")
+master <- "filename.xlsx"       
+screens_au <- "filename.xlsx"
+screens_ps <- "filename.xlsx"
 
+## do not change
+wrangler(master,screens_au,screens_ps)  
+    
 ```
 
 
-# Data Pull Descriptives 
+```{r clean data}
 
-## Positive screens for either AUDC or PCPTSD 
+## do not change
+clean_datapull(merged)
+
+```
+
+## Sample size by Site
 
 ```{r}
 sheet1 %>% group_by(Site) %>% summarise(count = n())
@@ -110,41 +169,45 @@ sheet1 %>% group_by(Site) %>% summarise(count = n()) %>%
   theme_minimal() + theme(axis.text = element_text(color = "black")) 
 ```
 
-
-### AUD Screens 
+## Women's Sample
 
 ```{r}
 
-sheet1 %>% ggplot(aes(Site, AUDC)) + geom_boxplot() + theme_minimal() + 
-  theme(axis.text = element_text(color = "black")) + labs(x = "") 
-  
+sheet1 %>%filter(Gender == "F") %>% group_by(Site, Eligibility) %>% 
+  summarise(Count = n()) %>% 
+  ggplot(aes(Site, Count, fill = fct_relevel(Eligibility, "BOTH"))) + geom_col(position = "dodge") + 
+  labs(x = "", fill = "Positive Screens:") +
+  theme_minimal() + theme(axis.text = element_text(color = "black"), legend.position = "bottom") +
+  scale_fill_viridis_d(option = "cividis")
 
 ```
 
+## Primary Care Screens
 
-## Counts by PC Team
-
-```{r teams}
-
-clinic_count <-  function(x){sheet1 %>% filter(Site== x) %>% group_by(Site, PC_Team) %>%
-    summarise(count = n()) %>% arrange(desc(count))}
-
-```
-
-### Site Name
 ```{r}
 
-clinic_count("NAME")
+sheet1 %>% filter(PCPTSD > 0) %>%
+  mutate(group = ifelse((PCPTSD >= 2), "Positive PC-PTSD", "Negative PC-PTSD")) %>%
+  group_by(Site, Gender, group) %>% summarise(count = n()) %>%
+  spread(group,count)
+
+sheet1 %>% filter(PCPTSD > 0) %>%
+  mutate(group = ifelse((PCPTSD >= 2), "Positive PC-PTSD", "Negative PC-PTSD")) %>%
+  ggplot(aes(Site, AUDC)) + geom_boxplot(aes(color = Gender)) + 
+  theme_minimal() + 
+  theme(axis.text = element_text(color = "black"), legend.position = "bottom", 
+        panel.spacing = unit(2, "lines"), strip.text.x = element_text(color = "black", face = "bold")) + labs(x = "") + 
+  geom_hline(yintercept = 3, linetype = "dashed", color = "black") +
+  scale_color_viridis_d(option = "cividis") + facet_grid(~group) 
 
 ```
-
 
 ## Counts when positive for both screens 
 
 ```{r Screen both}
 
 sheet1 %>% filter(Eligibility == "BOTH")  %>% 
-   group_by(Site) %>% summarise(count = n(),AUD_median = median(AUDC),
+   group_by(Site, Gender) %>% summarise(count = n(),AUD_median = median(AUDC),
                                 AUDC_max = max(AUDC),PTSD_median = median(PCPTSD),
                                 PCPTSD_max = max(PCPTSD))
 ```
@@ -160,6 +223,46 @@ sheet1 %>% group_by(Month= month(ScreenDate_AU, label = TRUE), Site) %>%
   scale_color_viridis_d() + scale_y_continuous(breaks = c(2,4,6,8, 10))
 
 ```
+
+
+## Average distance to site
+```{r distance}
+
+sheet2 %>% select(Site, dist_miles) %>% filter(dist_miles > 0 & dist_miles < 25) %>%
+   group_by(Site) %>% summarise(Count = n(), Avg. = mean(dist_miles))
+
+sheet2 %>% select(Site, dist_miles) %>% filter(dist_miles > 0 & dist_miles < 25) %>%
+  ggplot(aes(Site, dist_miles)) + geom_boxplot() + theme_minimal() +
+  theme(axis.text = element_text(color = "black")) +
+  labs(y = "Distance in miles", x = "")
+
+```
+
+### Patients with permanent out-of-state address
+```{r}
+sheet2 %>% filter(State != "NEW YORK") %>% 
+   group_by(Site) %>% summarise(Count = n())
+
+```
+
+## Counts by PC Team
+
+```{r teams}
+
+clinic_count <-  function(x){sheet1 %>% filter(Site== x) %>% group_by(Site, PC_Team) %>%
+    summarise(count = n()) %>% arrange(desc(count))}
+
+```
+
+### Site Name
+
+```{r}
+
+clinic_count("Site")
+
+```
+
+
 
 
 
