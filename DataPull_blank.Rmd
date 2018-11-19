@@ -21,7 +21,7 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
   ## Step 3 
   ### Run `clean data` chunk
 
-  ## Step 4
+  ## Step 4 (to create report)
   ### copy and run render function in console:
   
   ## rmarkdown::render("DOC/DIRECTORY/DataPull_*.Rmd", output_file = paste0("REPORTNAME_",today(),".html"), output_format = "all", output_dir = paste0(studypath,"Reports/")) 
@@ -35,37 +35,34 @@ library(lubridate)
 library(openxlsx)
 library(knitr)
 library(sf)
-library(knitr)
 
 ### set path variables
+xpath <<- "ENTER/LONG/XDRIVE/DIRECTORY/FOR/DATAPULL/LOCATION/"
 
-  xpath <<- "ENTER/LONG/XDRIVE/DIRECTORY/FOR/DATAPULL/LOCATION/"
-  studypath <<- "ENTER/LONG/XDRIVE/DIRECTORY/FOR/STUDY/FOLDER/"
+studypath <<- "ENTER/LONG/XDRIVE/DIRECTORY/FOR/STUDY/FOLDER/"
 
-#### wrangle raw data ####
-wrangler <- function(x,arg1,arg2){  
+
+wrangler <- function(x,arg1,arg2){  #### wrangle raw data ####
   
   ## col types 
   names <- names(read_excel(paste0(xpath,x), n_max = 0))
-  ct <- ifelse(grepl("^VisitDateTime_", names), "date", "guess")
+    ct <- ifelse(grepl("^VisitDateTime_", names), "date", ifelse(grepl("^PatientSSN", names), "text", "guess"))
   ## import data
   raw <- read_excel(paste0(xpath,x), col_types = ct)
-  ## format SSN
-  raw$SSN <- ifelse(grepl("^0",raw$PatientSSN), paste0("'",raw$PatientSSN),raw$PatientSSN)
 
   ## import all screens
   AU <- read_excel(paste0(xpath,arg1)) %>% 
     mutate(ScreenDate_AU = date(VisitDateTime), AUDC=as.numeric(RawScore)) %>%
     select(PatientSID, ScreenDate_AU, AUDC) %>%
     group_by(PatientSID) %>% slice(which.max(ScreenDate_AU))
-
+  
   PS <- read_excel(paste0(xpath,arg2)) %>% 
     mutate(ScreenDate_PS = date(VisitDateTime), PCPTSD =as.numeric(RawScore)) %>%
     select(PatientSID, ScreenDate_PS, PCPTSD) %>%
     group_by(PatientSID) %>% slice(which.max(ScreenDate_PS))
-
+  
   all_screens <- merge(AU, PS, by.x = "PatientSID", by.y = "PatientSID", all = TRUE)
-
+  
   ## merge to master file
   merged <<- merge(raw,all_screens, by.x = "PatientSID", by.y = "PatientSID", all.x = TRUE)
   ## save raw data to study folder
@@ -80,16 +77,18 @@ clean_datapull <- function(x){
     separate(PatientFirstName, into = c("First_Name", "Middle", "suffix")) %>%
     replace_na(list(suffix = "")) %>%
     unite(Last_Name, PatientLastName, suffix, sep = " ") %>%
+     unite(First_Name, First_Name, Middle, sep = " ") %>% 
     mutate(ScreenID = "", subnum = "",Study = "PC-TIME", List_Date = today(),
          SignOff_Date = "", Next_Contact = "", Recruitment_Status = "Pending PCP Sign-Off",
          CheckBack_Date = "") %>% 
-    rename(PC_Team = `PC Team`, PCP = PrimaryCareProvider,PC_Type =ProviderType) %>%
-    select(-Middle, -PatientSID,-PatientSSN,-c(18:23))
+    rename(PCP = PrimaryCareProvider,PC_Type =ProviderType, SSN = PatientSSN) %>%
+    select(-PatientSID,-c(16:22))
 
+ ### Study specific 
   ## order columns
-  newclean <- cbind(clean[27:28], clean[1:2],clean[22],clean[29:34],clean[11:15],
-                   clean[17:18],clean[16],clean[23:26], clean[3:10],clean[19:21]) %>% 
-              as.tibble()
+  newclean <- cbind(clean[27:28], clean[1:2],clean[16],clean[29:34],clean[11:14],clean[26],
+                    clean[17:18],clean[15],clean[22:25], clean[3:10],clean[19:21]) %>% 
+    as.tibble()
 
   ## create sheet 1 - Patient info
   sheet1 <<- newclean %>% 
@@ -119,7 +118,7 @@ clean_datapull <- function(x){
 
   ## create sheet 2 - Address info
   sheet <- newclean %>% 
-    select(subnum, SSN, Home_Phone = "PhoneNumber1", Cell_Phone = "PhoneNumber2",StreetAddress1,
+    select(Last_Name, SSN, Home_Phone = "PhoneNumber1", Cell_Phone = "PhoneNumber2",StreetAddress1,
            StreetAddress2, City, State, Zip,lat,long,Site) %>% 
     replace_na(list(StreetAddress2 = "")) %>% 
     unite(StreetAddress, StreetAddress1,StreetAddress2, sep = " ") %>% 
@@ -142,20 +141,33 @@ clean_datapull <- function(x){
 ## Enter raw data filenames 
 ## include a `.xlsx` extension  
 
-master <- "filename.xlsx"       
+## x - master data pull
+master <- "filename.xlsx" 
+
+## arg1 - AU scores
 screens_au <- "filename.xlsx"
+
+## arg2 - PT scores
 screens_ps <- "filename.xlsx"
 
 ## do not change
-wrangler(master,screens_au,screens_ps)  
+wrangler(master,screens_au,screens_ps) ## run function 
     
+```
+
+
+```{r Edit PC Teams}
+
+merged$PC_Team <- gsub("\\d", "",str_remove(merged$`PC Team`,"TEAMLET")) %>%
+  str_remove(" A") %>% str_wrap()
+
 ```
 
 
 ```{r clean data}
 
 ## do not change
-clean_datapull(merged)
+clean_datapull(merged) ## run function 
 
 ```
 
